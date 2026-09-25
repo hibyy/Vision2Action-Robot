@@ -1,0 +1,6 @@
+robot_ai_env/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+experiments/*.mp4

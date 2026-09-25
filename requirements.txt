@@ -1,0 +1,5 @@
+pybullet
+numpy
+opencv-python-headless
+matplotlib
+ultralytics
