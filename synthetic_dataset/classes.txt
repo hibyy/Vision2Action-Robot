@@ -1,0 +1,4 @@
+red_obj
+green_obj
+blue_obj
+yellow_obj

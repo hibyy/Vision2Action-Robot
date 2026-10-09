@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "simulation"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "vision"))
 
 from camera import OverheadCamera          # noqa: E402
-from detector import detect_by_color       # noqa: E402
+from detector import detect_objects        # noqa: E402
 
 
 def localize_objects(rgb, depth, camera: OverheadCamera):
@@ -25,7 +25,7 @@ def localize_objects(rgb, depth, camera: OverheadCamera):
         {"label": str, "confidence": float,
          "pixel_centroid": (cx, cy), "world_position": (x, y, z)}
     """
-    detections = detect_by_color(rgb)
+    detections = detect_objects(rgb)
     results = []
     for det in detections:
         cx, cy = det["centroid_px"]
@@ -52,7 +52,7 @@ def localize_objects(rgb, depth, camera: OverheadCamera):
 if __name__ == "__main__":
     from environment import WarehouseEnv  # noqa: E402
 
-    env = WarehouseEnv(gui=False)
+    env = WarehouseEnv(gui=True)
     cam = OverheadCamera()
     rgb, depth, seg = cam.capture()
 

@@ -14,6 +14,8 @@ YOLO model later (see notes/synthetic_dataset_plan.md) is a drop-in
 replacement -- nothing downstream needs to change.
 """
 
+import os
+
 import cv2
 import numpy as np
 
@@ -81,11 +83,101 @@ def detect_by_color(rgb_image, min_area=15, max_area=2500, min_fill=0.6):
     return detections
 
 
+# Class names the trained model outputs -> names the rest of the pipeline
+# (pick_place.py, COLOR_RANGES) uses. Add entries here if you retrain.
+LABEL_ALIASES = {"red_obj": "red_cube", "blue_obj": "blue_box"}
+
+DEFAULT_WEIGHTS = os.path.join(os.path.dirname(__file__), "weights", "best.pt")
+
+
+def load_yolo(weights_path=DEFAULT_WEIGHTS):
+    """Load the trained YOLO model once and reuse it (loading is slow)."""
+    from ultralytics import YOLO
+
+    if not os.path.exists(weights_path):
+        raise FileNotFoundError(f"YOLO weights not found: {weights_path}")
+    model = YOLO(weights_path)
+    print(f"[detector] loaded {weights_path} with classes: {model.names}")
+    return model
+
+
+def detect_by_yolo(rgb_image, model, conf=0.25, imgsz=640):
+    """
+    rgb_image: HxWx3 uint8 in RGB order (as returned by OverheadCamera.capture).
+
+    IMPORTANT: Ultralytics treats a raw numpy array as BGR (OpenCV order),
+    but PyBullet gives RGB. Passing it straight in swaps red and blue, which
+    makes a model trained on correct images call the red cube "blue_box" and
+    vice versa. We convert to BGR here so the model sees what it saw in
+    training. (Passing a file path works in a notebook only because the
+    file loader does this conversion for you.)
+
+    Returns the same dict format as detect_by_color().
+    """
+    bgr = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+    result = model.predict(bgr, conf=conf, imgsz=imgsz, verbose=False)[0]
+
+    detections = []
+    for box in result.boxes:
+        x1, y1, x2, y2 = box.xyxy[0].tolist()
+        x, y = int(x1), int(y1)
+        w, h = int(x2 - x1), int(y2 - y1)
+        label = result.names[int(box.cls[0])]
+        label = LABEL_ALIASES.get(label, label)
+        detections.append(
+            {
+                "label": label,
+                "confidence": round(float(box.conf[0]), 2),
+                "bbox": (x, y, w, h),
+                "centroid_px": ((x1 + x2) / 2, (y1 + y2) / 2),
+            }
+        )
+    return detections
+
+
+def check_label_colors(rgb_image, detections):
+    """
+    Sanity check: warn if a detection's label disagrees with the dominant
+    red/blue colour inside its box. Catches RGB/BGR mix-ups immediately.
+    """
+    for det in detections:
+        x, y, w, h = det["bbox"]
+        patch = rgb_image[max(y, 0):y + h, max(x, 0):x + w]
+        if patch.size == 0:
+            continue
+        r, b = patch[..., 0].mean(), patch[..., 2].mean()
+        seen = "red" if r > b else "blue"
+        expected = "red" if det["label"].startswith("red") else "blue"
+        if seen != expected:
+            print(
+                f"[detector] WARNING: '{det['label']}' box looks {seen} "
+                f"(R={r:.0f}, B={b:.0f}) - check channel order / weights"
+            )
+
+
+_model = None
+
+
+def detect_objects(rgb_image, use_yolo=True, weights_path=DEFAULT_WEIGHTS, **kw):
+    """
+    Single entry point for the pipeline. Uses YOLO if the weights exist,
+    otherwise falls back to the HSV colour detector.
+    """
+    global _model
+    if use_yolo and os.path.exists(weights_path):
+        if _model is None:
+            _model = load_yolo(weights_path)
+        dets = detect_by_yolo(rgb_image, _model, **kw)
+        check_label_colors(rgb_image, dets)
+        return dets
+    return detect_by_color(rgb_image)
+
+
 def draw_detections(rgb_image, detections):
     bgr = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR).copy()
     for det in detections:
         x, y, w, h = det["bbox"]
-        color = COLOR_RANGES[det["label"]]["bgr_draw"]
+        color = COLOR_RANGES.get(det["label"], {}).get("bgr_draw", (0, 255, 0))
         cv2.rectangle(bgr, (x, y), (x + w, y + h), color, 2)
         text = f"{det['label']} {det['confidence']:.2f}"
         cv2.putText(
@@ -102,11 +194,11 @@ if __name__ == "__main__":
     from environment import WarehouseEnv
     from camera import OverheadCamera
 
-    env = WarehouseEnv(gui=False)
+    env = WarehouseEnv(gui=True)
     cam = OverheadCamera()
     rgb, depth, seg = cam.capture()
 
-    detections = detect_by_color(rgb)
+    detections = detect_objects(rgb)
     print(f"Found {len(detections)} detections:")
     for d in detections:
         print(f"  {d['label']:10s} conf={d['confidence']:.2f} "

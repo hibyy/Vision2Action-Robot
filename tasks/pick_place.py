@@ -35,24 +35,39 @@ def find_object(label, localized_objects):
     return max(matches, key=lambda o: o["confidence"])
 
 
-def pick_and_place(env, robot, cam, label, drop_xy, lift_height=0.20, verbose=True):
+def pick_and_place(env, robot, cam, label, drop_xy, lift_height=0.08, verbose=True,
+                    detect_retries=2):
     """
     Full vision-driven pick-and-place for one object.
 
     label:    e.g. "red_cube" -- must match a label the detector produces
     drop_xy:  (x, y) world position to place the object at
+    detect_retries: if the object isn't detected on the first capture,
+        wait a moment (let the scene settle -- an object that just landed
+        might be mid-bounce/mid-rotation and momentarily hard to detect)
+        and try again before giving up. This is real, if simple, failure
+        recovery: a transient miss shouldn't be treated the same as "this
+        object genuinely isn't here."
     """
-    # 1. SEE: capture the scene
-    rgb, depth, seg = cam.capture()
-
-    # 2. UNDERSTAND: detect + localize in 3D (this is the pipeline from
-    #    Phases 3-4 -- no ground truth involved)
-    detections = localize_objects(rgb, depth, cam)
-    target = find_object(label, detections)
+    # 1. SEE: capture the scene (retrying on a transient detection miss)
+    target = None
+    for attempt in range(detect_retries + 1):
+        rgb, depth, seg = cam.capture()
+        detections = localize_objects(rgb, depth, cam)
+        target = find_object(label, detections)
+        if target is not None:
+            break
+        if attempt < detect_retries:
+            if verbose:
+                print(f"[vision] '{label}' not detected (attempt {attempt + 1}), "
+                      f"letting the scene settle and retrying...")
+            env.step(60)  # let physics settle -- may be mid-bounce/rotation
 
     if target is None:
-        raise RuntimeError(f"Vision pipeline did not detect any '{label}' in the scene.")
-
+        raise RuntimeError(
+            f"Vision pipeline did not detect any '{label}' in the scene "
+            f"after {detect_retries + 1} attempt(s)."
+        )
     est_pos = target["world_position"]
     if verbose:
         gt_pos = env.object_position(label)
@@ -74,6 +89,8 @@ def pick_and_place(env, robot, cam, label, drop_xy, lift_height=0.20, verbose=Tr
 
     robot.move_to((est_pos[0], est_pos[1], est_pos[2] + lift_height))
     robot.move_to((drop_xy[0], drop_xy[1], est_pos[2] + lift_height))
+    env.step(30)  # let residual arm velocity settle before releasing --
+                   # releasing while still moving imparts drift to the object
     robot.open_gripper()
     env.step(60)
 
